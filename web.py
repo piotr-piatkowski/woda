@@ -4,9 +4,11 @@ import os
 import sys
 import csv
 import locale
+import uvicorn
 
+from fastapi import FastAPI
 from datetime import datetime
-from nicegui import ui
+from nicegui import ui, app
 
 DATA_FILE = "woda.csv"
 
@@ -18,7 +20,6 @@ with open(DATA_FILE, "r") as f:
     data = list(reader)
 
 objects = set( (row["name"], row["river"]) for row in data)
-objects = sorted(objects, key=lambda r: locale.strxfrm(r[0]) or locale.strxfrm(r[1]))
 objects = [{"name": name, "river": river} for name, river in objects]
 
 for obj in objects:
@@ -30,38 +31,87 @@ for row in data:
         datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp()
     )
 
-def render_page():
+class MainUI:
+    grid: ui.aggrid
 
-    with ui.left_drawer().classes("h-screen"):
-        ui.label("Wybierz obiekt:").classes("font-bold")
+    @classmethod
+    def init_nice_gui(cls, fastapi_app: FastAPI):
+        @ui.page("/")
+        async def root():
+            main_ui = MainUI()
+            await main_ui.render_page()
 
-        grid = ui.aggrid(
-            {
-                "defaultColDef": {"flex": 1, "resizable": True},
-                "columnDefs": [
-                    {
-                        "field": "name",
-                        "headerName": "Zbiornik",
+        @app.on_startup
+        async def app_startup():
+            ...
+
+        @app.on_shutdown
+        async def app_shutdown():
+            ...
+
+        ui.run_with(fastapi_app, title="Woda")
+
+    async def render_page(self):
+
+        self.main_content = ui.column().classes("h-[90vh] w-full")
+
+        # with ui.header():
+        #     ui.label("Dane o zapełnieniu i przepływach w zbiornikach retencyjnych").classes("font-bold w-full text-center text-2xl")
+
+        # with ui.footer():
+        #     ui.label("Autor: Piotr Piątkowski, 2024").classes("w-full text-right text-sm font-italic")
+
+        with ui.left_drawer().classes("h-screen w-1/4"):
+            ui.label("Wybierz obiekt:").classes("font-bold")
+
+            self.grid = ui.aggrid(
+                {
+                    "accentedSort": True,
+                    "defaultColDef": {
+                        "flex": 1,
+                        "resizable": True,
                         "filter": True,
                         "sortable": True,
-                        ":comparator": 
-                            "(vA, vB, nA, nB, desc) => "
-                            "vA.localeCompare(vB)",
+                        "sortingOrder": ["asc", "desc"],
                     },
-                    {
-                        "field": "river",
-                        "headerName": "Rzeka",
-                        "filter": True,
-                        "sortable": True,
-                        ":comparator": 
-                            "(vA, vB, nA, nB, desc) => "
-                            "vA.localeCompare(vB)",
-                    },
-                ],
-                "rowData": objects,
-                "rowSelection": "single",
-            }
-        ).classes("h-full")
+                    "columnDefs": [
+                        {
+                            "field": "name",
+                            "headerName": "Zbiornik",
+                            "sort": "asc",
+                        },
+                        {
+                            "field": "river",
+                            "headerName": "Rzeka",
+                        },
+                    ],
+                    "rowData": objects,
+                    "rowSelection": "single",
+                }
+            )
+            self.grid.classes("h-full")
+            self.grid.on("selectionChanged", self.render_main)
 
-render_page()
-ui.run(reload=True, title="Woda")
+    async def render_main(self):
+        self.main_content.clear()
+        with self.main_content:
+            selected = await self.grid.get_selected_row()
+            if selected is None:
+                ui.label("Wybierz obiekt z listy").classes("font-bold")
+            else:
+                ui.label(
+                    f"Obiekt: {selected['name']} ({selected['river']})"
+                ).classes("font-bold")
+            print(selected)
+
+
+fapp = FastAPI()
+MainUI.init_nice_gui(fapp)
+
+uvicorn.run(
+    fapp,
+    host="0.0.0.0",
+    port=8080,
+    workers=1,
+    reload=False,
+)
