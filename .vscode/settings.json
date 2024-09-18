@@ -1,0 +1,20 @@
+{
+    "editor.rulers": [
+        {
+            "column": 79
+        }
+    ],
+    "rewrap.autoWrap.enabled": true,
+    "rewrap.wrappingColumn": 79,
+    "[python]": {
+        "editor.formatOnType": true,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+    },
+    "python.analysis.typeCheckingMode": "basic",
+    "remote.localPortHost": "allInterfaces",
+    "python.testing.pytestArgs": [
+        "-vs",
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}
