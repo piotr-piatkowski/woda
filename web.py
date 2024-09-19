@@ -6,6 +6,7 @@ import csv
 import locale
 import uvicorn
 
+from typing import cast
 from fastapi import FastAPI
 from datetime import datetime
 from nicegui import ui, app
@@ -30,15 +31,34 @@ for row in data:
     row["timestamp"] = int(
         datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp()
     )
+    for n in ["outflow", "inflow", "volume", "normal_volume", "max_volume"]:
+        try:
+            row[n] = float(row.get(n, 0))
+        except (ValueError, TypeError):
+            row[n] = None
+    max_volume = cast(float, row["max_volume"])
+    volume = cast(float, row["volume"])
+    if max_volume and volume:
+        row["volume_percent"] = volume / max_volume * 100
+    else:
+        row["volume_percent"] = None
+
+def round_up(n):
+    digs = len(str(int(n))) - 2
+    return round(n + 0.5*(10**digs), -digs)
 
 class MainUI:
     grid: ui.aggrid
+    data: list[dict]
+
+    def __init__(self, data: list[dict]):
+        self.data = data
 
     @classmethod
-    def init_nice_gui(cls, fastapi_app: FastAPI):
+    def init_nice_gui(cls, fastapi_app: FastAPI, data: list[dict]):
         @ui.page("/")
         async def root():
-            main_ui = MainUI()
+            main_ui = MainUI(data)
             await main_ui.render_page()
 
         @app.on_startup
@@ -53,13 +73,30 @@ class MainUI:
 
     async def render_page(self):
 
+        ui.add_head_html(
+            '<style>\n'
+            'div.nicegui-echart {\n'
+            '  position: absolute;\n'
+            '  left: 0;\n'
+            '  top: 0;\n'
+            '  right: 0;\n'
+            '  bottom: 0;\n'
+            '}\n'
+            '</style>\n'
+        )
+
         self.main_content = ui.column().classes("h-[90vh] w-full")
 
-        # with ui.header():
-        #     ui.label("Dane o zapełnieniu i przepływach w zbiornikach retencyjnych").classes("font-bold w-full text-center text-2xl")
-
-        # with ui.footer():
-        #     ui.label("Autor: Piotr Piątkowski, 2024").classes("w-full text-right text-sm font-italic")
+        with ui.footer(), ui.row().classes("flex w-full"):
+            URL = "https://www.gov.pl/web/wody-polskie/sytuacja-hydrologiczna/"
+            ui.label("Dane pochodzą ze strony: ")
+            ui.link(URL, URL, new_tab=True).classes("text-white")
+            ui.space().classes("flex-grow")
+            ui.label("Pobierz surowe dane (CSV)").on(
+                "click", lambda: ui.download("woda.csv")
+            ).classes("cursor-pointer text-white")
+            ui.space().classes("flex-grow")
+            ui.label("Kontakt: Piotr Piątkowski, pp@idea7.pl")
 
         with ui.left_drawer().classes("h-screen w-1/4"):
             ui.label("Wybierz obiekt:").classes("font-bold")
@@ -98,15 +135,118 @@ class MainUI:
             selected = await self.grid.get_selected_row()
             if selected is None:
                 ui.label("Wybierz obiekt z listy").classes("font-bold")
-            else:
-                ui.label(
-                    f"Obiekt: {selected['name']} ({selected['river']})"
-                ).classes("font-bold")
-            print(selected)
+                return
+
+            ui.label(
+                f"Obiekt: {selected['name']} ({selected['river']})"
+            ).classes("font-bold")
+
+            chart_data = [
+                row for row in self.data 
+                if row["name"] == selected["org_name"] 
+                and row["river"] == selected["river"]
+            ]
+            print(len(chart_data))
+            print(chart_data)
+            max_volume = max(row["max_volume"] for row in chart_data
+                             if row["max_volume"] is not None)
+            top_volume = max(row["volume"] for row in chart_data
+                                if row["volume"] is not None)
+
+            series = []
+            for i, (field, name) in enumerate([
+                ("inflow", "Dopływ"),
+                ("outflow", "Odpływ"),
+                ("volume", "Wypełnienie"),
+                #"volume_percent",
+            ]):
+                sdata = {
+                    "type": "line",
+                    "showSymbol": True,
+                    "name": name,
+                    "yAxisIndex": 1 if field == "volume" else 0,
+                    "data": [
+                        [
+                            r["timestamp"] * 1000,
+                            r[field],
+                        ]
+                        for r in sorted(chart_data, key=lambda x: x["timestamp"])
+                    ],
+                }
+
+                if field == "volume":
+                    sdata["markLine"] = {
+                        "data": [
+                            {
+                                "name": "Maksymalna pojemność powodziowa",
+                                "yAxis": max_volume,
+                                "symbol": "none",
+                                "lineStyle": {
+                                    "color": "red",
+                                    "type": "dashed",
+                                },
+                            },
+                        ],
+                    }
+
+                series.append(sdata)
+
+            chart_data = {
+                "animation": False,
+                "legend": {
+                    "show": True,
+                    "top": 10,
+                },
+                "tooltip": {
+                    "show": True,
+                },
+                "xAxis": {
+                    "type": "time",
+                    "nameLocation": "center",
+                    "axisLabel": {
+                        "align": "left",
+                        "padding": [0, 0, 0, 10],
+                        "formatter": "{dd}-{MM}-{yyyy}",
+                    },
+                    "splitArea": {
+                        "show": True,
+                    },
+                },
+                "yAxis": [
+                    {
+                        "type": "value",
+                        "name": "Przepływ\n\n[m³/s]",
+                        "min": 0,
+                        "alignTicks": True,
+                        "position": "left",
+                        "axisLine": {
+                            "show": True,
+                        },
+                    },
+                    {
+                        "type": "value",
+                        "name": "Wypełnienie\n\n[mln m³]",
+                        "min": 0,
+                        "max": round_up(max(max_volume, top_volume)),
+                        "alignTicks": True,
+                        "position": "right",
+                        "axisLine": {
+                            "show": True,
+                        },
+                        "axisLabel": {
+                            ":formatter": "(v) => v.toFixed(2)",
+                        },
+                    },
+                ],
+                "series": series,
+            }
+            print(chart_data)
+            with ui.card().classes("w-full h-[500px]"):
+                self.chart = ui.echart(chart_data).classes("h-full")
 
 
 fapp = FastAPI()
-MainUI.init_nice_gui(fapp)
+MainUI.init_nice_gui(fapp, data)
 
 uvicorn.run(
     fapp,
